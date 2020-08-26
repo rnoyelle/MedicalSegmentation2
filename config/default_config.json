@@ -1,0 +1,89 @@
+{
+    "path": {
+        "csv_path": "/home/salim/Documents/DeepOncopole/data/DB_PATH_NIFTI.csv",
+        "trained_model_path": null,
+        "training_model_folder": "/media/salim/DD 2To/RUDY_WEIGTH/training"
+    },
+    "preprocessing": {
+        "image_shape": [
+            128,
+            128,
+            256
+        ],
+        "in_channels": 2,
+        "voxel_spacing": [
+            4.8,
+            4.8,
+            4.0
+        ],
+        "data_augment": true,
+        "resize": true,
+        "origin": "head",
+        "normalize": true,
+        "number_class": 2,
+        "threshold" : "otsu"
+    },
+    "model": {
+        "architecture": "vnet",
+        "vnet": {
+            "cnn_params": {
+                "keep_prob": 1.0,
+                "kernel_size": [
+                    5,
+                    5,
+                    5
+                ],
+                "num_channels": 8,
+                "num_levels": 4,
+                "num_convolutions": [
+                    1,
+                    2,
+                    3,
+                    3
+                ],
+                "bottom_convolutions": 3,
+                "activation": "relu"
+            }
+        },
+        "unet": {
+            "cnn_params": {
+                "filters": [
+                    8,
+                    16,
+                    32
+                ],
+                "kernel": [
+                    3,
+                    3,
+                    3
+                ],
+                "activation": "relu",
+                "padding": "same",
+                "pooling": [
+                    2,
+                    2,
+                    2
+                ]
+            }
+        }
+    },
+    "training": {
+        "epochs": 100,
+        "batch_size": 2,
+        "shuffle": true,
+        "optimizer": {
+            "opt": "SGD",
+            "opt_params": {
+                "learning_rate": 1e-03,
+                "momentum": 0.9
+            }
+        },
+        "callbacks": {
+            "patience": 10,
+            "ReduceLROnPlateau": true,
+            "EarlyStopping": false,
+            "ModelCheckpoint": true,
+            "TensorBoard": true
+        }
+    }
+}

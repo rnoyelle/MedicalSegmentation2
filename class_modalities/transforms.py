@@ -1,0 +1,243 @@
+import sys
+
+import numpy as np
+import SimpleITK as sitk
+from skimage import filters
+
+from monai.transforms.compose import MapTransform, Randomizable
+
+# istance(keys) == str = > keys=[keys]
+
+
+class LoadNifti(MapTransform):
+
+    def __init__(self, keys=("pet_img", "ct_img", "mask_img"),
+                 dtypes=None,
+                 image_only=False):
+        super().__init__(keys)
+
+        if dtypes is None:
+            dtypes = {'pet_img': sitk.sitkFloat32,
+                      'ct_img': sitk.sitkFloat32,
+                      'mask_img': sitk.sitkUInt8}
+        self.keys = keys
+        self.image_only = image_only
+        assert not self.image_only
+
+        self.dtypes = dtypes
+
+    def __call__(self, img_dict):
+        output = dict()
+        for key in self.keys:
+            # check img_dict[key] == str
+            output[key] = sitk.ReadImage(img_dict[key], self.dtypes[key])
+
+        return output
+
+
+class Roi2Mask(MapTransform):
+    """
+    Apply threshold-based method to determine the segmentation from the ROI
+    """
+
+    def __init__(self, keys=('pet_img', 'mask_img'), method='otsu', tval=0.0, idx_channel=-1):
+        super().__init__(keys)
+
+        self.keys = keys
+        self.method = method.lower()
+        self.tval = tval
+        self.idx_channel = idx_channel
+
+    def __call__(self, img_dict):
+        pet_key = self.keys[0]
+        roi_key = self.keys[1]
+
+        img_dict[roi_key] = self.roi2mask(img_dict[roi_key], img_dict[pet_key])
+        return img_dict
+
+    def calculate_threshold(self, roi):
+        if self.method == 'absolute':
+            return self.tval
+
+        elif self.method == 'relative':
+            # check len(roi) > 0
+            SUV_max = np.max(roi)
+            return self.tval * SUV_max
+
+        elif self.method == 'adaptative' or self.method == 'otsu':
+            # check len(np.unique(roi)) > 1
+            return filters.threshold_otsu(roi)
+
+    def roi2mask(self, mask_img, pet_img):
+        """
+        Generate the mask from the ROI of the pet scan
+        Args:
+            :param mask_img: sitk image, raw mask (i.e ROI)
+            :param pet_img: sitk image, the corresponding pet scan
+
+        :return: sitk image, the ground truth segmentation
+        """
+        # transform to numpy
+        mask_array = sitk.GetArrayFromImage(mask_img)
+        pet_array = sitk.GetArrayFromImage(pet_img)
+
+        # get 3D meta information
+        if len(mask_array.shape) == 3:
+            mask_array = np.expand_dims(mask_array, axis=0)
+
+            origin = mask_img.GetOrigin()
+            spacing = mask_img.GetSpacing()
+            direction = tuple(mask_img.GetDirection())
+            size = mask_img.GetSize()
+        else:
+            mask_array = np.rollaxis(mask_array, self.idx_channel, 0)
+
+            # convert false-4d meta information to 3d information
+            origin = mask_img.GetOrigin()[:-1]
+            spacing = mask_img.GetSpacing()[:-1]
+            direction = tuple(el for i, el in enumerate(mask_img.GetDirection()[:12]) if not (i + 1) % 4 == 0)
+            size = mask_img.GetSize()[:-1]
+
+        new_mask = np.zeros(mask_array.shape[1:], dtype=np.int8)
+
+        for num_slice in range(mask_array.shape[0]):
+            mask_slice = mask_array[num_slice]
+            roi = pet_array[mask_slice > 0]
+
+            try:
+                threshold = self.calculate_threshold(roi)
+
+                # apply threshold
+                new_mask[np.where((pet_array >= threshold) & (mask_slice > 0))] = 1
+
+            except Exception as e:
+                print(e)
+                print(sys.exc_info()[0])
+
+        # reconvert to sitk and restore information
+        new_mask = sitk.GetImageFromArray(new_mask)
+        new_mask.SetOrigin(origin)
+        new_mask.SetDirection(direction)
+        new_mask.SetSpacing(spacing)
+
+        return new_mask
+
+
+class ResampleReshapeAlign(MapTransform):
+
+    def __init__(self, target_shape, target_voxel_spacing,
+                 keys=('pet_img', 'ct_img', 'mask_img'),
+                 origin='head', origin_key='pet_img'):
+        super().__init__(keys)
+
+        # mode="constant", cval=0,
+        # axcodes="RAS", labels=(('R', 'L'), ('A', 'P'), ('I', 'S'))
+        # np.flip(img, axis=0)
+
+        self.keys = keys
+        self.target_shape = target_shape
+        self.target_voxel_spacing = target_voxel_spacing
+        self.target_direction = (1, 0, 0, 0, 1, 0, 0, 0, 1)
+
+        self.origin = origin
+        self.origin_key = origin_key
+
+        # sitk.sitkLinear, sitk.sitkBSpline, sitk.sitkNearestNeighbor
+        self.interpolator = {'pet_img': sitk.sitkBSpline,
+                             'ct_img': sitk.sitkBSpline,
+                             'mask_img': sitk.sitkNearestNeighbor}
+
+        self.default_value = {'pet_img': 0.0,
+                              'ct_img': -1000.0,
+                              'mask_img': 0}
+
+    def __call__(self, img_dict):
+        # compute transformation parameters
+        new_origin = self.compute_new_origin(img_dict[self.origin_key])
+
+        for key in self.keys:
+            img_dict[key] = self.resample_img(img_dict[key], new_origin, self.default_value[key],
+                                              self.interpolator[key])
+
+        return img_dict
+
+    def compute_new_origin_head2hip(self, pet_img):
+        new_shape = self.target_shape
+        new_spacing = self.target_voxel_spacing
+        pet_size = pet_img.GetSize()
+        pet_spacing = pet_img.GetSpacing()
+        pet_origin = pet_img.GetOrigin()
+        new_origin = (pet_origin[0] + 0.5 * pet_size[0] * pet_spacing[0] - 0.5 * new_shape[0] * new_spacing[0],
+                      pet_origin[1] + 0.5 * pet_size[1] * pet_spacing[1] - 0.5 * new_shape[1] * new_spacing[1],
+                      pet_origin[2] + 1.0 * pet_size[2] * pet_spacing[2] - 1.0 * new_shape[2] * new_spacing[2])
+        return new_origin
+
+    def compute_new_origin_centered_img(self, pet_img):
+        origin = np.asarray(pet_img.GetOrigin())
+        shape = np.asarray(pet_img.GetSize())
+        spacing = np.asarray(pet_img.GetSpacing())
+        new_shape = np.asarray(self.target_shape)
+        new_spacing = np.asarray(self.target_voxel_spacing)
+
+        return tuple(origin + 0.5 * (shape * spacing - new_shape * new_spacing))
+
+    def compute_new_origin(self, img):
+        if self.origin == 'middle':
+            return self.compute_new_origin_centered_img(img)
+        elif self.origin == 'head':
+            return self.compute_new_origin_head2hip(img)
+
+    def resample_img(self, img, new_origin, default_value, interpolator):
+        # transformation parametrisation
+        transformation = sitk.ResampleImageFilter()
+        transformation.SetOutputDirection(self.target_direction)
+        transformation.SetOutputOrigin(new_origin)
+        transformation.SetOutputSpacing(self.target_voxel_spacing)
+        transformation.SetSize(self.target_shape)
+
+        transformation.SetDefaultPixelValue(default_value)
+        transformation.SetInterpolator(interpolator)
+
+        return transformation.Execute(img)
+
+
+class Sitk2Numpy(MapTransform):
+    def __init__(self, keys=('pet_img', 'ct_img', 'mask_img')):
+        super().__init__(keys)
+        self.keys = keys
+
+    def __call__(self, img_dict):
+
+        for key in self.keys:
+            img = sitk.GetArrayFromImage(img_dict[key])
+            img = np.transpose(img, (2, 1, 0))  # (z, y, x) to (x, y, z)
+            img_dict[key] = img
+
+
+        return img_dict
+
+
+class ConcatModality(MapTransform):
+
+    def __init__(self, keys=('pet_img', 'ct_img'), channel_first=True, new_key='image', del_keys=True):
+        super().__init__(keys)
+        self.keys = keys
+        self.channel_first = channel_first
+        self.new_key = new_key
+        self.del_keys = del_keys
+
+    def __call__(self, img_dict):
+        idx_channel = 0 if self.channel_first else -1
+        imgs = (img_dict[key] for key in self.keys)
+        img_dict[self.new_key] = np.stack(imgs, axis=idx_channel)
+
+        if self.del_keys:
+            for key in self.keys:
+                del img_dict[key]
+                # del img_dict[key + '_meta_dict']
+
+        return img_dict
+
+
+
+
