@@ -6,10 +6,13 @@ from skimage import filters
 
 from monai.transforms.compose import MapTransform, Randomizable
 
-# istance(keys) == str = > keys=[keys]
+# is instance(keys) == str = > keys=[keys]
 
 
 class LoadNifti(MapTransform):
+    """
+    Load Nifti images and returns Simple itk object
+    """
 
     def __init__(self, keys=("pet_img", "ct_img", "mask_img"),
                  dtypes=None,
@@ -41,12 +44,24 @@ class Roi2Mask(MapTransform):
     """
 
     def __init__(self, keys=('pet_img', 'mask_img'), method='otsu', tval=0.0, idx_channel=-1):
+        """
+        :param keys:
+        :param method: method to use for calculate the threshold
+                Must be one of 'absolute', 'relative', 'otsu', 'adaptative'
+        :param tval: Used only for method= 'absolute' or 'relative'. threshold value of the method.
+                for 2.5 SUV threshold: use method='absolute', tval=2.5
+                for 41% SUV max threshold: method='relative', tval=0.41
+        :param idx_channel: idx of the ROI.
+                for example, if ROI image shape is (n_roi, x, y, z) then idx_channel must be 0.
+        """
         super().__init__(keys)
 
         self.keys = keys
         self.method = method.lower()
         self.tval = tval
         self.idx_channel = idx_channel
+
+        assert method in ['absolute', 'relative', 'otsu', 'adaptative']
 
     def __call__(self, img_dict):
         pet_key = self.keys[0]
@@ -124,10 +139,20 @@ class Roi2Mask(MapTransform):
 
 
 class ResampleReshapeAlign(MapTransform):
+    """
+    Resample to the same resolution, Reshape and Align to the same view.
+    """
 
     def __init__(self, target_shape, target_voxel_spacing,
                  keys=('pet_img', 'ct_img', 'mask_img'),
                  origin='head', origin_key='pet_img'):
+        """
+        :param target_shape: tuple[int], (x, y, z)
+        :param target_voxel_spacing: tuple[float], (x, y, z)
+        :param keys:
+        :param origin: method to set the view. Must be one of 'middle' 'head'
+        :param origin_key: image reference for origin
+        """
         super().__init__(keys)
 
         # mode="constant", cval=0,
@@ -213,7 +238,6 @@ class Sitk2Numpy(MapTransform):
             img = np.transpose(img, (2, 1, 0))  # (z, y, x) to (x, y, z)
             img_dict[key] = img
 
-
         return img_dict
 
 
@@ -237,7 +261,3 @@ class ConcatModality(MapTransform):
                 # del img_dict[key + '_meta_dict']
 
         return img_dict
-
-
-
-

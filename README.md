@@ -26,7 +26,6 @@ Implemented model :
 ## Training a Model 
 
 ### Training 3D model (V-Net)
-- To train V-Net :
 ```
 python3 training_3d_cnn.py config/default_config.json
 ```
@@ -34,7 +33,7 @@ python3 training_3d_cnn.py config/default_config.json
 **Expected results:**
 - Dice score :
 
-### Training 2D model (V-Net)DenseX-Net :
+### Training 2D model DenseX-Net :
 ```
 python3 training_2d_cnn.py config/default_config_2d.json 
 ```

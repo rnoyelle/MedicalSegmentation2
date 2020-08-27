@@ -1,17 +1,17 @@
 import sys
+import argparse
 import json
 
 import os
 from datetime import datetime
 
+import glob
+import shutil
+import tempfile
+
 import numpy as np
 from class_modalities.datasets import DataManager
 from class_modalities.transforms import LoadNifti, Roi2Mask, ResampleReshapeAlign, Sitk2Numpy, ConcatModality
-
-import glob
-import os
-import shutil
-import tempfile
 
 import pytorch_lightning
 import torch
@@ -20,7 +20,7 @@ import monai
 from monai.config import print_config
 from monai.data import CacheDataset, list_data_collate
 from monai.losses import DiceLoss
-from monai.metrics import compute_meandice
+
 from monai.networks.layers import Norm
 from monai.networks.nets import UNet
 from monai.transforms import (
@@ -33,6 +33,23 @@ from monai.transforms import (
     Spacingd,
     RandAffined,
     ToTensord,
+    Activationsd,
+    AsDiscreted,
+)
+
+from ignite.metrics import Accuracy, Precision, Recall
+from monai.metrics import compute_meandice
+
+from monai.inferers import SimpleInferer
+from monai.engines import SupervisedEvaluator, SupervisedTrainer
+from monai.handlers import (
+    CheckpointSaver,
+    LrScheduleHandler,
+    MeanDice,
+    StatsHandler,
+    TensorBoardImageHandler,
+    TensorBoardStatsHandler,
+    ValidationHandler,
 )
 from monai.utils import set_determinism
 
@@ -159,18 +176,83 @@ def main(config):
     opt = torch.optim.Adam(net.parameters(), 1e-3)
 
     # training
+    val_post_transforms = Compose(
+        [
+            Activationsd(keys="pred", sigmoid=True),
+            AsDiscreted(keys="pred", threshold_values=True),
+        ]
+    )
+    val_handlers = [
+        StatsHandler(output_transform=lambda x: None),
+        TensorBoardStatsHandler(log_dir="./runs/", output_transform=lambda x: None),
+        # TensorBoardImageHandler(
+        #     log_dir="./runs/",
+        #     batch_transform=lambda x: (x["image"], x["label"]),
+        #     output_transform=lambda x: x["pred"],
+        # ),
+        CheckpointSaver(save_dir="./runs/", save_dict={"net": net, "opt": opt}, save_key_metric=True),
+    ]
+
+    evaluator = SupervisedEvaluator(
+        device=device,
+        val_data_loader=val_loader,
+        network=net,
+        inferer=SimpleInferer(),
+        post_transform=val_post_transforms,
+        key_val_metric={
+            "val_mean_dice": MeanDice(include_background=True, output_transform=lambda x: (x["pred"], x["label"]))
+        },
+        additional_metrics={"val_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
+                            "val_recall": Recall(output_transform=lambda x: (x["pred"], x["label"]))},
+        val_handlers=val_handlers,
+        # if no FP16 support in GPU or PyTorch version < 1.6, will not enable AMP evaluation
+        # amp=True if monai.config.get_torch_version_tuple() >= (1, 6) else False,
+    )
+
+    train_post_transforms = Compose(
+        [
+            Activationsd(keys="pred", sigmoid=True),
+            AsDiscreted(keys="pred", threshold_values=True),
+        ]
+    )
+    train_handlers = [
+        # LrScheduleHandler(lr_scheduler=lr_scheduler, print_lr=True),
+        ValidationHandler(validator=evaluator, interval=1, epoch_level=True),
+        StatsHandler(tag_name="train_loss", output_transform=lambda x: x["loss"]),
+        TensorBoardStatsHandler(log_dir="./runs/", tag_name="train_loss", output_transform=lambda x: x["loss"]),
+        CheckpointSaver(save_dir="./runs/", save_dict={"net": net, "opt": opt}, save_interval=2, epoch_level=True),
+    ]
+
+    trainer = SupervisedTrainer(
+        device=device,
+        max_epochs=5,
+        train_data_loader=train_loader,
+        network=net,
+        optimizer=opt,
+        loss_function=loss,
+        inferer=SimpleInferer(),
+        post_transform=train_post_transforms,
+        key_train_metric={"train_acc": Accuracy(output_transform=lambda x: (x["pred"], x["label"]))},
+        additional_metrics={"train_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
+                            "train_recall": Recall(output_transform=lambda x: (x["pred"], x["label"]))},
+        train_handlers=train_handlers,
+        # if no FP16 support in GPU or PyTorch version < 1.6, will not enable AMP training
+        amp=True if monai.config.get_torch_version_tuple() >= (1, 6) else False,
+    )
+    trainer.run()
 
 
 if __name__ == "__main__":
-    # import config file
-    if len(sys.argv) == 2:
-        config_name = sys.argv[1]
-    else:
-        config_name = 'config/default_config.json'
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--config", default='config/default_config.json', type=str,
+                        help="json config file")
 
-    with open(config_name) as f:
+    args = parser.parse_args()
+
+    with open(args.config) as f:
         config = json.load(f)
 
     main(config)
+
 
 
