@@ -1,4 +1,5 @@
 import sys
+import argparse
 import json
 
 import os
@@ -15,31 +16,7 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 
 
-# read arg values
-if len(sys.argv) == 2:
-    config_name = 'config/default_config.json'
-    MIP_folder = sys.argv[1]
-elif len(sys.argv) == 3:
-    config_name = sys.argv[1]
-    MIP_folder = sys.argv[2]
-else:
-    config_name = 'config/default_config.json'
-    MIP_folder = '/home/salim/Documents/DeepOncopole/data/MIP_dataset'
-
-# read config file
-with open(config_name) as f:
-    config = json.load(f)
-
-# path
-csv_path = config['path']['csv_path']  # /media/salim/DD 2To/AHL2011_NIFTI/AHL2011_PET0_NIFTI.csv'
-
-
-# Get Data
-DM = DataManager(csv_path=csv_path)
-dataset = collections.defaultdict(dict)
-dataset['train'], dataset['val'], dataset['test'] = DM.get_train_val_test(wrap_with_dict=True)
-
-for subset_type, data in dataset.items():
+def main(dataset, subset_type, MIP_folder):
     print(subset_type)
     # path to pdf to generate
     filename = os.path.join(MIP_folder, subset_type, 'MIP_raw_{}_data.pdf'.format(subset_type))
@@ -80,3 +57,27 @@ for subset_type, data in dataset.items():
 
             pdf.savefig()  # saves the current figure into a pdf page
             plt.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-c", "--csv", default="/home/salim/Documents/DeepOncopole/data/DB_PATH_NIFTI.csv", type=str,
+                        help="csv file")
+    # parser.add_argument("-cfg", "--config", default='config/default_config.json', type=str,
+    #                     help="json config file")
+    parser.add_argument("-d", "--dir", default='/home/salim/Documents/DeepOncopole/data/MIP_dataset', type=str,
+                        help="directory to save results")
+    args = parser.parse_args()
+
+    # # read config file
+    # with open(args.config) as f:
+    #     config = json.load(f)
+    # csv_path = config['path']['csv_path']
+
+    # Get Data
+    DM = DataManager(csv_path=args.csv_path)
+    dataset = collections.defaultdict(dict)
+    dataset['train'], dataset['val'], dataset['test'] = DM.get_train_val_test(wrap_with_dict=True)
+
+    for subset_type, data in dataset.items():
+        main(data, subset_type, args.dir)

@@ -69,6 +69,17 @@ def get_study_uid(img_path):
     return re.sub('_nifti_(PT|mask|CT)\.nii(\.gz)?', '', os.path.basename(img_path))
 
 
+def one_hot_encode(x, n_classes=None):
+    """
+    One hot encode a list of sample labels. Return a one-hot encoded vector for each label.
+    : x: List of sample Labels
+    : return: Numpy array of one-hot encoded labels
+     """
+    if n_classes is None:
+        n_classes = np.max(x) + 1
+    return np.eye(n_classes)[x]
+
+
 def roi2tmtv(mask_img, pet_img, threshold='auto'):
     """
     Generate the mask from the ROI of the pet scan

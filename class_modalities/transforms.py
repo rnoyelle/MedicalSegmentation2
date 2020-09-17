@@ -2,7 +2,9 @@ import sys
 
 import numpy as np
 import SimpleITK as sitk
-from skimage import filters
+from skimage import filters, measure
+
+from .utils import get_study_uid, one_hot_encode
 
 from monai.transforms.compose import MapTransform, Randomizable
 
@@ -31,6 +33,7 @@ class LoadNifti(MapTransform):
 
     def __call__(self, img_dict):
         output = dict()
+        output['image_id'] = get_study_uid(img_dict[self.keys[0]])
         for key in self.keys:
             # check img_dict[key] == str
             output[key] = sitk.ReadImage(img_dict[key], self.dtypes[key])
@@ -103,7 +106,7 @@ class Roi2Mask(MapTransform):
             origin = mask_img.GetOrigin()
             spacing = mask_img.GetSpacing()
             direction = tuple(mask_img.GetDirection())
-            size = mask_img.GetSize()
+            # size = mask_img.GetSize()
         else:
             mask_array = np.rollaxis(mask_array, self.idx_channel, 0)
 
@@ -111,7 +114,7 @@ class Roi2Mask(MapTransform):
             origin = mask_img.GetOrigin()[:-1]
             spacing = mask_img.GetSpacing()[:-1]
             direction = tuple(el for i, el in enumerate(mask_img.GetDirection()[:12]) if not (i + 1) % 4 == 0)
-            size = mask_img.GetSize()[:-1]
+            # size = mask_img.GetSize()[:-1]
 
         new_mask = np.zeros(mask_array.shape[1:], dtype=np.int8)
 
@@ -136,6 +139,90 @@ class Roi2Mask(MapTransform):
         new_mask.SetSpacing(spacing)
 
         return new_mask
+
+
+class ConnectedComponent(MapTransform):
+    """
+    Get Connected component and transform to one-hot encoding
+    """
+
+    def __init__(self, keys='mask_img', channels_first=True, exclude_background=True):
+        super().__init__(keys)
+        self.channels_first = channels_first
+        self.exclude_background = exclude_background
+
+    def __call__(self, img_dict):
+
+        mask = img_dict[self.keys[0]]
+        blobs_labels = measure.label(mask, background=0)
+        # convert to one hot: different components = different instance
+        mask = one_hot_encode(blobs_labels)
+        if self.exclude_background:
+            mask = mask[:, :, :, 1:]  # exclude background
+        if self.channels_first:
+            mask = np.rollaxis(mask, 3)  # (x, y, z, n_object) to (n_object, x, y, z)
+            n_obj = mask.shape[0]
+        else:
+            n_obj = mask.shape[-1]
+
+        img_dict[self.keys[0]] = mask
+        img_dict['iscrowd'] = np.zeros(n_obj, dtype=np.int8)
+        # torch.zeros((n_obj,), dtype=torch.int64)
+        return img_dict
+
+
+class GenerateBbox(MapTransform):
+    """
+    Generate Bounding Box from segmentation
+    """
+
+    def __init__(self, keys='mask_img', channels_first=True):
+        super().__init__(keys)
+        self.channels_first = channels_first
+        assert self.channels_first
+
+    # y1, y2 = min(indexes[0]), max(indexes[0])
+    # x1, x2 = min(indexes[1]), max(indexes[1])
+
+    def __call__(self, img_dict):
+
+        mask = img_dict[self.keys[0]]
+
+        # generate bounding box from the segmentation
+        bbox = []
+        for i in range(mask.shape[0]):
+            indexes = np.where(mask[i])
+            x1, x2 = min(indexes[0]), max(indexes[0])
+            y1, y2 = min(indexes[1]), max(indexes[1])
+            z1, z2 = min(indexes[2]), max(indexes[2])
+            bbox.append([x1, y1, z1, x2, y2, z2])
+
+        bbox = np.array(bbox)
+        img_dict['boxes'] = bbox
+
+        area = (bbox[:, 3] - bbox[:, 0] + 1) * (bbox[:, 4] - bbox[:, 1] + 1) * (bbox[:, 5] - bbox[:, 2] + 1)
+        img_dict['area'] = area
+        return img_dict
+
+
+class FilterObject(object):
+    """
+    Remove too small bouding boxes
+    """
+
+    def __init__(self, tval):
+        self.tval = tval
+
+    def __call__(self, img_dict):
+        area = img_dict['area']
+        # selected only R.O.I/object above the threshold
+        idx = (area > self.tval)
+
+        img_dict['area'] = area[idx]
+        img_dict['mask_img'] = img_dict['mask_img'][idx]
+        img_dict['boxes'] = img_dict['boxes'][idx]
+
+        return img_dict
 
 
 class ResampleReshapeAlign(MapTransform):

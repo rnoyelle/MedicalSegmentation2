@@ -202,7 +202,8 @@ def main(config):
         key_val_metric={
             "val_mean_dice": MeanDice(include_background=True, output_transform=lambda x: (x["pred"], x["label"]))
         },
-        additional_metrics={"val_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
+        additional_metrics={"val_acc": Accuracy(output_transform=lambda x: (x["pred"], x["label"])),
+                            "val_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
                             "val_recall": Recall(output_transform=lambda x: (x["pred"], x["label"]))},
         val_handlers=val_handlers,
         # if no FP16 support in GPU or PyTorch version < 1.6, will not enable AMP evaluation
@@ -230,10 +231,12 @@ def main(config):
         network=net,
         optimizer=opt,
         loss_function=loss,
+        prepare_batch=lambda x: (x['image'], x['mask_img']),
         inferer=SimpleInferer(),
         post_transform=train_post_transforms,
-        key_train_metric={"train_acc": Accuracy(output_transform=lambda x: (x["pred"], x["label"]))},
-        additional_metrics={"train_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
+        key_train_metric={"train_mean_dice": MeanDice(include_background=True, output_transform=lambda x: (x["pred"], x["label"]))},
+        additional_metrics={"train_acc": Accuracy(output_transform=lambda x: (x["pred"], x["label"])),
+                            "train_precision": Precision(output_transform=lambda x: (x["pred"], x["label"])),
                             "train_recall": Recall(output_transform=lambda x: (x["pred"], x["label"]))},
         train_handlers=train_handlers,
         # if no FP16 support in GPU or PyTorch version < 1.6, will not enable AMP training
